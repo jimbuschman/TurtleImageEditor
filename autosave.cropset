@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "shape": "head",
+  "units": "in",
+  "sizes": {
+    "head": 0.28594,
+    "shield": 0.39342,
+    "circle12": 0.47244
+  },
+  "lock_aspect": true,
+  "dpi": "600",
+  "fmt": "PDF (exact size, best for printing)",
+  "page": "Letter (8.5 x 11)",
+  "copies": "1",
+  "combine": false,
+  "cut_line": true,
+  "ruler": true,
+  "outdir": "C:\\Users\\jbuschman\\source\\repos\\jimbuschman\\ImageEditor\\output",
+  "selected": 1,
+  "items": [
+    {
+      "path": "C:\\Users\\jbuschman\\source\\repos\\jimbuschman\\ImageEditor\\DSC07660.jpg",
+      "name": "DSC07660.jpg",
+      "zoom": 1.0,
+      "pan": [
+        0.0,
+        0.0
+      ],
+      "rotation": 0.0
+    },
+    {
+      "path": "C:\\Users\\jbuschman\\source\\repos\\jimbuschman\\ImageEditor\\DSC07874-300x248.jpg",
+      "name": "DSC07874-300x248.jpg",
+      "zoom": 1.0,
+      "pan": [
+        0.0,
+        0.0
+      ],
+      "rotation": 0.0
+    }
+  ]
+}
