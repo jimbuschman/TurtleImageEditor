@@ -261,6 +261,26 @@ def grid_layout(page_px, cell, gap, margin, bottom_reserve=0):
 DEFAULT_OUTDIR = HERE / "output"
 
 
+def free_path(p):
+    """
+    `p`, or the next '_2', '_3'... variant that is not taken yet.
+
+    Exporting is how work leaves this program, so a second export must not
+    quietly destroy the first. Re-cropping and exporting again leaves both on
+    disk to compare, rather than one file that silently changed underneath.
+    """
+    p = Path(p)
+    if not p.exists():
+        return p
+    stem, suffix = p.stem, p.suffix
+    n = 2
+    while True:
+        alt = p.with_name(f"{stem}_{n}{suffix}")
+        if not alt.exists():
+            return alt
+        n += 1
+
+
 def foreign_profile(p):
     """
     True when `p` sits inside a different user's profile folder.
@@ -1064,15 +1084,20 @@ class App(tk.Tk):
             copies = max(1, int(self._num(self.copies, 1)))
             size_tag = f"{wi:.3g}x{hi:.3g}in"
 
+            copy_tag = f"_x{copies}" if copies > 1 else ""
             crops = [(it, masked(it, wpx, hpx, key)) for it in items]
             if self.combine.get():
                 # every image on one sheet, each repeated `copies` times and
-                # kept together so they are easy to find when cutting
-                jobs = [(f"sheet_{key}_{len(items)}imgs_{size_tag}",
+                # kept together so they are easy to find when cutting.
+                # Name it after what is on it: a sheet of one image called
+                # 'sheet_1imgs' would replace the last export every time.
+                who = (items[0].path.stem if len(items) == 1
+                       else f"sheet_{len(items)}imgs")
+                jobs = [(f"{who}_{key}{copy_tag}_{size_tag}",
                          [c for _, c in crops for _ in range(copies)])]
             else:
-                jobs = [(f"{it.path.stem}_{key}_{size_tag}", [c] * copies)
-                        for it, c in crops]
+                jobs = [(f"{it.path.stem}_{key}{copy_tag}_{size_tag}",
+                         [c] * copies) for it, c in crops]
 
             written = []
             for stem, sheet_crops in jobs:
@@ -1153,11 +1178,11 @@ class App(tk.Tk):
             out = []
             for i, sheet in enumerate(pages, 1):
                 suffix = "" if len(pages) == 1 else f"_p{i}"
-                p = outdir / f"{stem}_sheet{suffix}.png"
+                p = free_path(outdir / f"{stem}_sheet{suffix}.png")
                 sheet.save(p, dpi=(dpi, dpi))
                 out.append(p)
             return out
-        p = outdir / f"{stem}.pdf"
+        p = free_path(outdir / f"{stem}.pdf")
         pages[0].save(p, "PDF", resolution=float(dpi),
                       save_all=len(pages) > 1, append_images=pages[1:])
         return [p]
@@ -1187,7 +1212,7 @@ class App(tk.Tk):
             if self.cut_line.get():
                 draw_cut_line(sheet, key, offset=spot, size=crop.size,
                               width=line_w)
-        p = outdir / f"{stem}_sheet.png"
+        p = free_path(outdir / f"{stem}_sheet.png")
         sheet.save(p, dpi=(dpi, dpi))
         return [p]
 
@@ -1204,7 +1229,7 @@ class App(tk.Tk):
                 out = crop.copy()
             if self.cut_line.get():
                 draw_cut_line(out, key, width=line_w)
-            p = outdir / f"{stem}.png"
+            p = free_path(outdir / f"{stem}.png")
             out.save(p, dpi=(dpi, dpi))
             return [p]
         pages = []
@@ -1214,7 +1239,7 @@ class App(tk.Tk):
             if self.cut_line.get():
                 draw_cut_line(sheet, key, width=line_w)
             pages.append(sheet)
-        p = outdir / f"{stem}.pdf"
+        p = free_path(outdir / f"{stem}.pdf")
         pages[0].save(p, "PDF", resolution=float(dpi),
                       save_all=len(pages) > 1, append_images=pages[1:])
         return [p]
