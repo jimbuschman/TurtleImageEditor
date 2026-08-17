@@ -393,10 +393,10 @@ class App(tk.Tk):
         self.size_h = tk.StringVar(value="")
         self.lock_aspect = tk.BooleanVar(value=cfg.get("lock_aspect", True))
         self.dpi = tk.StringVar(value=cfg.get("dpi", "600"))
-        self.fmt = tk.StringVar(value=cfg.get("fmt", "PDF (exact size, best for printing)"))
+        self.fmt = tk.StringVar(value=cfg.get("fmt", "PNG (white background)"))
         self.page = tk.StringVar(value=cfg.get("page", "Letter (8.5 x 11)"))
         self.copies = tk.StringVar(value=cfg.get("copies", "1"))
-        self.combine = tk.BooleanVar(value=cfg.get("combine", False))
+        self.combine = tk.BooleanVar(value=cfg.get("combine", True))
         self.cut_line = tk.BooleanVar(value=cfg.get("cut_line", True))
         self.ruler = tk.BooleanVar(value=cfg.get("ruler", True))
         self.outdir = tk.StringVar(
@@ -1083,9 +1083,12 @@ class App(tk.Tk):
             more = "" if len(written) <= 12 else f"\n...and {len(written) - 12} more"
             note = ""
             if self.combine.get():
-                per_page = len(self._spots(dpi, crops[0][1].size) or [1])
+                shapes = len(items) * copies
+                spots = self._spots(dpi, crops[0][1].size)
+                where = (f"{len(spots)} per page." if spots else
+                         "all on the one image.")
                 note = (f"\n{len(items)} image(s) x {copies} = "
-                        f"{len(items) * copies} shapes, {per_page} per page.")
+                        f"{shapes} shapes, {where}")
             messagebox.showinfo(
                 "Exported",
                 f"Wrote {len(written)} file(s) to:\n{outdir}\n\n{msg}{more}{note}"
@@ -1118,17 +1121,25 @@ class App(tk.Tk):
         A sheet is used whenever there is a real page to tile onto, or whenever
         more than one shape has to share a file. Otherwise the shape is written
         on its own at exact size.
+
+        Nothing is ever silently left out: every shape handed in lands in one of
+        the files that come back.
         """
         fmt = self.fmt.get()
         as_png = fmt.startswith("PNG")
         page_px = self._page_px(dpi)
-        sheet_wanted = page_px is not None and (not as_png or self.combine.get())
 
-        if not sheet_wanted:
+        if page_px is None:
+            # No page to tile onto. A PDF can still give each shape its own
+            # page, but a PNG is a single canvas - so when several shapes have
+            # to share one they get packed together rather than dropped.
+            if as_png and len(crops) > 1:
+                return self._write_packed(stem, crops, key, dpi, outdir, fmt)
             return self._write_bare(stem, crops, key, dpi, outdir, as_png, fmt)
 
-        if as_png and page_px is None:                # can't tile without a page
-            page_px = (int(round(8.5 * dpi)), int(round(11 * dpi)))
+        if as_png and len(crops) == 1:
+            return self._write_bare(stem, crops, key, dpi, outdir, as_png, fmt)
+
         clear = as_png and "transparent" in fmt
         pages, fits = self._tile(crops, page_px, key, dpi, transparent=clear)
         if not fits:
@@ -1149,6 +1160,35 @@ class App(tk.Tk):
         p = outdir / f"{stem}.pdf"
         pages[0].save(p, "PDF", resolution=float(dpi),
                       save_all=len(pages) > 1, append_images=pages[1:])
+        return [p]
+
+    def _write_packed(self, stem, crops, key, dpi, outdir, fmt):
+        """
+        Every shape in one image, with no page around it.
+
+        'Trim to shape' means there is no paper to tile onto, so the canvas is
+        sized to the shapes themselves: a near-square grid with a thin gap to
+        cut along and no outer margin. The ruler check is a page feature and is
+        left off here - there is no margin to put it in.
+        """
+        gap = int(round(0.06 * dpi))
+        cw = max(c.width for c in crops)
+        ch = max(c.height for c in crops)
+        cols = max(1, int(math.ceil(math.sqrt(len(crops)))))
+        rows = int(math.ceil(len(crops) / cols))
+        clear = "transparent" in fmt
+        mode, bg = (("RGBA", (0, 0, 0, 0)) if clear else ("RGB", (255, 255, 255)))
+        sheet = Image.new(mode, (cols * cw + (cols - 1) * gap,
+                                 rows * ch + (rows - 1) * gap), bg)
+        line_w = max(1, dpi // 300)
+        for i, crop in enumerate(crops):
+            spot = ((i % cols) * (cw + gap), (i // cols) * (ch + gap))
+            sheet.paste(crop, spot, crop)
+            if self.cut_line.get():
+                draw_cut_line(sheet, key, offset=spot, size=crop.size,
+                              width=line_w)
+        p = outdir / f"{stem}_sheet.png"
+        sheet.save(p, dpi=(dpi, dpi))
         return [p]
 
     def _write_bare(self, stem, crops, key, dpi, outdir, as_png, fmt):
