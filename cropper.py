@@ -258,6 +258,100 @@ def grid_layout(page_px, cell, gap, margin, bottom_reserve=0):
     return spots, fits
 
 
+DEFAULT_OUTDIR = HERE / "output"
+
+
+def foreign_profile(p):
+    """
+    True when `p` sits inside a different user's profile folder.
+
+    Setups and settings are portable files that get copied or committed between
+    machines, so they routinely arrive holding an absolute path from whoever
+    saved them. Writing there is not merely missing - Windows denies the whole
+    parents=True chain at C:\\Users, which is a baffling 'Access is denied' for
+    a folder the user never typed.
+    """
+    try:
+        home = Path.home().resolve()
+        users = home.parent
+        p = Path(p).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    if not p.is_relative_to(users) or p.is_relative_to(home):
+        return False
+    return p != users
+
+
+def resolve_outdir(raw, probe=False):
+    """
+    The folder to actually write to, given whatever 'Save to' holds.
+
+    Anything blank, relative, or belonging to another machine's user resolves to
+    an `output` folder beside the script, which is always writable. With
+    `probe`, the folder is created and test-written now so the fallback happens
+    before a long export rather than after it.
+    """
+    raw = str(raw or "").strip().strip('"')
+    if not raw:
+        return DEFAULT_OUTDIR
+    p = Path(raw).expanduser()
+    if not p.is_absolute():
+        p = HERE / p
+    if foreign_profile(p):
+        return DEFAULT_OUTDIR
+    if not probe:
+        return p
+    try:
+        p.mkdir(parents=True, exist_ok=True)
+        probe_file = p / ".cropper-write-test"
+        probe_file.touch()
+        probe_file.unlink()
+        return p
+    except OSError:
+        return DEFAULT_OUTDIR
+
+
+def store_outdir(p):
+    """Save the path relative to the script when it lives inside the project, so
+    the setup stays usable on the next machine that opens it."""
+    p = Path(p)
+    try:
+        rel = p.relative_to(HERE)
+    except ValueError:
+        return str(p)
+    return str(rel) if rel.parts else "."
+
+
+def explain(exc, target=None):
+    """
+    A plain-language reason for a failed write, with the traceback kept below.
+
+    The raw traceback alone is no help at the printer: the three ways this
+    actually fails in practice - the file is open in a viewer, the folder is
+    gone or read-only, the finished size is too big to fit in memory - all read
+    as inscrutable OSErrors unless they are spelled out.
+    """
+    where = f"\n\n{target}" if target else ""
+    if isinstance(exc, PermissionError):
+        why = ("Windows would not let this file be written.\n\n"
+               "It is almost always already open somewhere - close it in your "
+               "PDF viewer or image editor and export again. If the folder "
+               "itself is read-only, choose a different one under 'Save to'.")
+    elif isinstance(exc, FileNotFoundError):
+        why = ("That folder does not exist and could not be created.\n\n"
+               "Pick a new one with the '...' button next to 'Save to'.")
+    elif isinstance(exc, MemoryError):
+        why = ("The finished size needs more memory than is available.\n\n"
+               "Lower the DPI or the finished size and try again.")
+    elif isinstance(exc, OSError):
+        why = (f"The file could not be written ({exc.strerror or exc}).\n\n"
+               "Check that the drive is connected and has free space, then "
+               "try a different folder under 'Save to'.")
+    else:
+        why = "Something unexpected went wrong."
+    return f"{why}{where}\n\n----- details -----\n{traceback.format_exc()}"
+
+
 # ----------------------------------------------------------------------- app ---
 
 class App(tk.Tk):
@@ -305,7 +399,8 @@ class App(tk.Tk):
         self.combine = tk.BooleanVar(value=cfg.get("combine", False))
         self.cut_line = tk.BooleanVar(value=cfg.get("cut_line", True))
         self.ruler = tk.BooleanVar(value=cfg.get("ruler", True))
-        self.outdir = tk.StringVar(value=cfg.get("outdir", str(HERE / "output")))
+        self.outdir = tk.StringVar(
+            value=str(resolve_outdir(cfg.get("outdir"))))
 
         self._build_ui()
         self._sync_height()
@@ -329,7 +424,8 @@ class App(tk.Tk):
                 "dpi": self.dpi.get(), "fmt": self.fmt.get(), "page": self.page.get(),
                 "copies": self.copies.get(), "combine": self.combine.get(),
                 "cut_line": self.cut_line.get(),
-                "ruler": self.ruler.get(), "outdir": self.outdir.get()}
+                "ruler": self.ruler.get(),
+                "outdir": store_outdir(self.outdir.get())}
         try:
             SETTINGS.write_text(json.dumps(data, indent=2), encoding="utf-8")
         except Exception:
@@ -548,13 +644,17 @@ class App(tk.Tk):
 
     def _sync_height(self, *_):
         self._remember_size()
+        w = self._num(self.size_w)
+        a = SH.aspect(self.shape_key.get())
         if self.lock_aspect.get():
-            w = self._num(self.size_w)
-            a = SH.aspect(self.shape_key.get())
             if w > 0 and a > 0:
                 self.size_h.set(f"{w / a:.4g}")
             self.h_entry.state(["disabled"])
         else:
+            # Unlocking hands the box to the user, but it has to start from a
+            # real number: an empty H reads as a zero height and blocks export.
+            if self._num(self.size_h) <= 0 and w > 0 and a > 0:
+                self.size_h.set(f"{w / a:.4g}")
             self.h_entry.state(["!disabled"])
         self.redraw()
 
@@ -586,7 +686,7 @@ class App(tk.Tk):
             "fmt": self.fmt.get(), "page": self.page.get(),
             "copies": self.copies.get(), "combine": self.combine.get(),
             "cut_line": self.cut_line.get(), "ruler": self.ruler.get(),
-            "outdir": self.outdir.get(), "selected": self.index,
+            "outdir": store_outdir(self.outdir.get()), "selected": self.index,
             "items": [{"path": str(it.path), "name": it.path.name,
                        "zoom": round(it.zoom, 6),
                        "pan": [round(it.pan[0], 6), round(it.pan[1], 6)],
@@ -611,8 +711,8 @@ class App(tk.Tk):
                 "Setup saved",
                 f"Saved {len(self.items)} image(s) with their positions to:\n{p}\n\n"
                 "Open it later to carry on where you left off.")
-        except Exception:
-            messagebox.showerror("Could not save setup", traceback.format_exc())
+        except Exception as exc:
+            messagebox.showerror("Could not save setup", explain(exc, p))
 
     def open_setup(self):
         p = filedialog.askopenfilename(
@@ -632,9 +732,12 @@ class App(tk.Tk):
 
         for var, keyname in ((self.units, "units"), (self.dpi, "dpi"),
                              (self.fmt, "fmt"), (self.page, "page"),
-                             (self.copies, "copies"), (self.outdir, "outdir")):
+                             (self.copies, "copies")):
             if data.get(keyname) is not None:
                 var.set(data[keyname])
+        # a setup saved elsewhere carries that machine's output path
+        if data.get("outdir") is not None:
+            self.outdir.set(str(resolve_outdir(data["outdir"])))
         for var, keyname in ((self.lock_aspect, "lock_aspect"),
                              (self.combine, "combine"),
                              (self.cut_line, "cut_line"), (self.ruler, "ruler")):
@@ -943,11 +1046,20 @@ class App(tk.Tk):
         try:
             wpx, hpx, dpi, wi, hi = self.out_px()
             if wi <= 0 or hi <= 0:
-                messagebox.showerror("Check the size",
-                                     "Enter a finished width greater than zero.")
+                # Name the box that is actually wrong - saying "width" when the
+                # height is the empty one sends you hunting in the wrong place.
+                bad = "width" if wi <= 0 else "height"
+                messagebox.showerror(
+                    "Check the size",
+                    f"Enter a finished {bad} greater than zero.")
                 return
-            outdir = Path(self.outdir.get())
-            outdir.mkdir(parents=True, exist_ok=True)
+            asked = self.outdir.get()
+            outdir = resolve_outdir(asked, probe=True)
+            redirected = ""
+            if outdir != Path(asked).expanduser():
+                self.outdir.set(str(outdir))
+                redirected = (f"\n\nNote: '{asked}' could not be written to, so "
+                              "this went to the project's own output folder.")
             key = self.shape_key.get()
             copies = max(1, int(self._num(self.copies, 1)))
             size_tag = f"{wi:.3g}x{hi:.3g}in"
@@ -976,10 +1088,11 @@ class App(tk.Tk):
                         f"{len(items) * copies} shapes, {per_page} per page.")
             messagebox.showinfo(
                 "Exported",
-                f"Wrote {len(written)} file(s) to:\n{outdir}\n\n{msg}{more}{note}\n\n"
+                f"Wrote {len(written)} file(s) to:\n{outdir}\n\n{msg}{more}{note}"
+                f"{redirected}\n\n"
                 "When printing, choose 100% / Actual Size - not Fit to Page.")
-        except Exception:
-            messagebox.showerror("Export failed", traceback.format_exc())
+        except Exception as exc:
+            messagebox.showerror("Export failed", explain(exc, self.outdir.get()))
 
     # ---- layout helpers
     def _page_px(self, dpi):
